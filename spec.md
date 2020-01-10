@@ -81,12 +81,12 @@ Filecoin节点使用Libp2p协议进行对等发现，对等路由和消息多播
 Graphsync:  用于传输区块链和用户数据。  
 [关于Graphsync] (https://github.com/ipld/specs/blob/master/block-layer/graphsync/graphsync.md "Graphsync")  
 Gossipsub：区块头和消息通过Gossip PubSub协议广播，其中节点可以订阅区块链数据的主题并接收这些主题中的消息。当接收到与主题相关的消息时,节点将处理该消息并将其转发给也订阅同一主题的同级。  
-[关于Gossipsub] (https://github.com/libp2p/specs/tree/master/pubsub/gossipsub "Gossipsub")  
+[关于Gossipsub]  (https://github.com/libp2p/specs/tree/master/pubsub/gossipsub "Gossipsub")  
 Kademlia DHT：是一个分布式哈希表，在特定节点的最大查找数上具有对数范围。Kad DHT主要用于Filecoin协议中的对等路由以及对等发现。  
-[参考实施] (https://github.com/libp2p/go-libp2p-kad-dht "Kademlia")  
+[参考实施]  (https://github.com/libp2p/go-libp2p-kad-dht "Kademlia")  
 Bootstrap List：是新节点加入网络后尝试连接的节点列表。引导节点列表及其地址有用户定义。  
 Peer Exchange：是一种发现协议，使对等方可以针对所需对等方针对其现有对等方创建并发出查询  
-[关于Peer Exchange] (https://github.com/libp2p/specs/issues/222 "Peer Exchange")  
+[关于Peer Exchange]  (https://github.com/libp2p/specs/issues/222 "Peer Exchange")  
 DNSDiscovery：(截至文档完成，正在设计与完善中) 
 HTTPDiscovery：(截至文档完成，正在设计与完善中)  
 Hello：处理与Filecoin节点的新连接。这是环境协议（例如KademliaDHT）发现过程中的重要组成部分。  
@@ -142,23 +142,23 @@ Filecoin假定系统参与者之间的时钟同步较弱。也就是说，系统
 Filecoin依靠此系统时钟来确保共识。具体来说，时钟是支持验证规则所必需的，该验证规则可防止块生产者使用未来的时间戳来挖掘块，并且阻止领导者选举的发生超出协议允许的频率。
 ### 时钟用途
 使用FIlecoin系统时钟：  
-通过同步节点来验证传入块是否在给定时间戳的适当纪元内被挖出（请参见[块验证] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__block__block_validation)）。这是可能的，因为系统时钟始终映射到唯一的纪元号，该纪元完全由创世块中的开始时间确定。  
+通过同步节点来验证传入块是否在给定时间戳的适当纪元内被挖出（请参见 [块验证]  (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__block__block_validation) ）。这是可能的，因为系统时钟始终映射到唯一的纪元号，该纪元完全由创世块中的开始时间确定。  
 通过同步节点以放置来自未来纪元的数据块  
-通过挖掘节点以允许参与者在下一轮尝试领导者选举（如果当前轮中没有人产生障碍）的情况下保持协议的活跃性（请参阅[储能共识] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__storage_power_consensus___index)）。  
+通过挖掘节点以允许参与者在下一轮尝试领导者选举（如果当前轮中没有人产生障碍）的情况下保持协议的活跃性（请参阅 [储能共识] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__storage_power_consensus___index)）。  
 
 为了允许旷工执行上述操作，系统时钟必须：  
-1.相对于其他节点具有足够低的时钟漂移（sub 1s），以使不会在其他节点的迫切情况下的被认为是未来纪元的纪元中挖掘区块（这些块直到根据[验证规则] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__struct__block___index)的适当纪元/时间才被[验证] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__struct__block___index)）。  
+1.相对于其他节点具有足够低的时钟漂移（sub 1s），以使不会在其他节点的迫切情况下的被认为是未来纪元的纪元中挖掘区块（这些块直到根据 [验证规则] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__struct__block___index)的适当纪元/时间才被 [验证] (https://filecoin-project.github.io/specs/#systems__filecoin_blockchain__struct__block___index)）。  
 2.设置节点初始化的时期数等于` epoch = Floor[(current_time - genesis_time) / epoch_time]`  
 预计其他子系统将从时钟子系统注册到NewRound () 事件。
 ### 时钟要求
 用作Filecoin协议一部分的时钟应保持同步，且漂移应小于1秒，以便进行适当验证。  
-可以预期，计算机时钟晶体的漂移速率约为[1ppm] (https://www.hindawi.com/journals/jcnc/2008/583162/)（即每秒1微秒或每周0.6秒），因此，为了满足上述要求：  
+可以预期，计算机时钟晶体的漂移速率约为 [1ppm] (https://www.hindawi.com/journals/jcnc/2008/583162/)（即每秒1微秒或每周0.6秒），因此，为了满足上述要求：  
 客户端应` pool.ntp.org`每小时查询NTP服务器（建议）以调整时钟偏斜。  
 我们建议以下之一：  
-`pool.ntp.org`（可以迎合[特定区域] (https://www.ntppool.org/zone)）  
-` time.cloudflare.com:1234`（有关[Cloudflare时间服务的] (https://www.cloudflare.com/time/)更多信息）  
-`time.google.com`(有关[Google Public NTP的] (https://developers.google.com/time)更多信息)  
-`ntp-b.nist.gov`([NIST] (https://tf.nist.gov/tf-cgi/servers.cgi)服务器需要注册)  
+`pool.ntp.org`（可以迎合 [特定区域] (https://www.ntppool.org/zone)）  
+` time.cloudflare.com:1234`（有关 [Cloudflare时间服务的] (https://www.cloudflare.com/time/)更多信息）  
+`time.google.com`(有关 [Google Public NTP的] (https://developers.google.com/time)更多信息)  
+`ntp-b.nist.gov`( [NIST] (https://tf.nist.gov/tf-cgi/servers.cgi)服务器需要注册)  
 
 采矿业务有强烈的动机来防止其时钟向前偏移一个以上的时间，以防止其提交的区块被拒绝。同样地，他们有动机来防止其时钟向后漂移超过一个纪元，从而避免将自己与网络中的同步节点分开。
 ### 未来的工作
@@ -220,7 +220,7 @@ Filecoin用户的需求差异很大，许多用户（尤其是旷工）将在Fil
 实现对主机OS文件系统的支持，实现对其他存储系统的支持。
 ## Piece文件的一部分
 片段是代表文件整体或一部分的对象，供交易中的客户和矿工使用。 客户雇用矿工来存储碎片。片段数据结构设计用于证明存储任意IPLD图和客户端数据。该图显示了一个Piece的详细组成及其证明树，包括完整的和带宽优化的块数据结构。
-![Piece,证明树和Piece数据结构](https://filecoin-project.github.io/specs/docs/systems/filecoin_files/piece/diagrams/pieces.png)      
+![Piece,证明树和Piece数据结构] (https://filecoin-project.github.io/specs/docs/systems/filecoin_files/piece/diagrams/pieces.png)      
 
 ```
 import ipld "github.com/filecoin-project/specs/libraries/ipld"

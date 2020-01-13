@@ -1365,4 +1365,1124 @@ func (a *Address_I) Ref() Address_Ptr {
 **协议指示符**字节标识此地址的类型和版本。  
 **有效负荷**用于唯一根据所述协议标识演员。  
 #### 网络前缀
-编码为字符串时，**网络前缀**位于地址之前。网络前缀指示地址所属的网络。网络前缀可以用于FIlecoin或用于FIlecoin测试网。值得注意的是，网络前缀永远不会出现在链上，仅在地址编码为人类可读格式时使用。
+编码为字符串时，**网络前缀**位于地址之前。网络前缀指示地址所属的网络。网络前缀可以用于FIlecoin或用于FIlecoin测试网。值得注意的是，网络前缀永远不会出现在链上，仅在地址编码为人类可读格式时使用。  
+.  
+.  
+.  
+### VM消息-Actor方法调用
+消息是两个参与者之间进行通信的单位，因此是状态变化的根本原因。一条消息结合了：  
+从发送方转移到收方的令牌金额  
+具有在接收方上调用的参数的方法。  
+
+Actor代码可以在处理收到的消息时将其他消息发送给其他Actor。消息被同步处理：参与者在恢复控制之前等待发送的消息完成。
+
+消息的处理消耗了以气体计价的计算和存储定位。消息的气体限制为其计算提供了上限。消息的发件人以其缺定的汽油价格来支付消息执行所消耗的气体单位（包括所有其他嵌套的信息）。区块生产者选择要包含在区块中的消息。并根据每个信息的汽油价格和消耗量获得奖励，从而形成市场。 
+#### 消息语法验证
+语法无效的消息不得传输，保留在消息池中或包含在块中。  
+语法上有效的`UnsignedMessage`:  
+1.具有格式正确的非空`To`地址，  
+2.具有格式正确的非空`From`地址，  
+3.具有非负数`CallSeqNum`，  
+4.具有`Value`不小于零且不大于令牌总供给（2e9 * 1e18）,   
+5.具有非负数`MethodNum`,  
+6.`Params`仅当`MethodNum`为零时才具有非空，  
+7.具有非负数`GasPrice`,  
+8.具有`GasLimit`至少等于与消息的序列化字节关联的气体消耗的值，  
+9.具有`GasLimit`不大于区块气体限制网络参数的值。  
+
+当单独发送时（在包含在块中之前）`SignedMessage`，无论使用哪种签名，都将消息打包为有效的签名信息：  
+序列化的总大小不大于`message.MessageMaxSize`。
+#### 消息语义验证
+语义验证是指需要消息本身之外的消息的验证。
+
+语义上有效的`SigneMessage`必须带有签名，以验证有效载荷是否已被`From`地址标识的账户执行者的公钥签名。请注意，当该`From`地址是ID地址时，必须在块所标识的父状态下的发送账户参与者的状态下查找公钥。  
+
+注意：发送方必须以包含消息的块所标识色父级状态存在。这意味着单个块包含创建新账户Actor的消息和来自同一Actor的消息是无效的。请参与者的第一条消息必须等到下一个纪元。消息池可能会排除来自Actor的，尚未处于链状状态的消息。
+
+消息没有进一步的语义验证，可能导致包含该消息的块无效。每个语法有效且正确签名的消息都可以包含在一个块中，并会从执行中产生一个收据。但是，消息可能无法执行到完成，在这种情况下，他不会影响所需的状态更改。
+
+这种“无消息语义验证“策略的原因是，在消息作为提示集的一部分执行之前，将不知道消息将应用于的状态。块生产者不知道在提示集是否有另一个块会在其之前，因此从声明的父状态更改了该块消息将应用到的状态。  
+
+```
+import filcrypto "github.com/filecoin-project/specs/algorithms/crypto"
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+import actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+import abi "github.com/filecoin-project/specs/actors/abi"
+
+// GasAmount is a quantity of gas.
+type GasAmount struct {
+    value                BigInt
+
+    Add(GasAmount)       GasAmount
+    Subtract(GasAmount)  GasAmount
+    SubtractIfNonnegative(GasAmount) (ret GasAmount, ok bool)
+    LessThan(GasAmount) bool
+    Equals(GasAmount) bool
+    Scale(int) GasAmount
+}
+
+type UnsignedMessage struct {
+    // Address of the receiving actor.
+    To          addr.Address
+    // Address of the sending actor.
+    From        addr.Address
+    // Expected CallSeqNum of the sending actor (only for top-level messages).
+    CallSeqNum  actor.CallSeqNum
+
+    // Amount of value to transfer from sender's to receiver's balance.
+    Value       abi.TokenAmount
+
+    // Optional method to invoke on receiver, zero for a plain value send.
+    Method      abi.MethodNum
+    /// Serialized parameters to the method (if method is non-zero).
+    Params      abi.MethodParams
+
+    // GasPrice is a Gas-to-FIL cost
+    GasPrice    abi.TokenAmount
+    GasLimit    GasAmount
+}  // representation tuple
+
+type SignedMessage struct {
+    Message    UnsignedMessage
+    Signature  filcrypto.Signature
+}  // representation tuple
+```
+```
+package message
+
+import (
+	filcrypto "github.com/filecoin-project/specs/algorithms/crypto"
+	util "github.com/filecoin-project/specs/util"
+)
+
+var IMPL_FINISH = util.IMPL_FINISH
+
+type Serialization = util.Serialization
+
+// The maximum serialized size of a SignedMessage.
+const MessageMaxSize = 32 * 1024
+
+func SignedMessage_Make(message UnsignedMessage, signature filcrypto.Signature) SignedMessage {
+	return &SignedMessage_I{
+		Message_:   message,
+		Signature_: signature,
+	}
+}
+
+func Sign(message UnsignedMessage, keyPair filcrypto.SigKeyPair) (SignedMessage, error) {
+	sig, err := filcrypto.Sign(keyPair, util.Bytes(Serialize_UnsignedMessage(message)))
+	if err != nil {
+		return nil, err
+	}
+	return SignedMessage_Make(message, sig), nil
+}
+
+func SignatureVerificationError() error {
+	IMPL_FINISH()
+	panic("")
+}
+
+func Verify(message SignedMessage, publicKey filcrypto.PublicKey) (UnsignedMessage, error) {
+	m := util.Bytes(Serialize_UnsignedMessage(message.Message()))
+	sigValid, err := filcrypto.Verify(publicKey, message.Signature(), m)
+	if err != nil {
+		return nil, err
+	}
+	if !sigValid {
+		return nil, SignatureVerificationError()
+	}
+	return message.Message(), nil
+}
+
+func (x *GasAmount_I) Add(y GasAmount) GasAmount {
+	IMPL_FINISH()
+	panic("")
+}
+
+func (x *GasAmount_I) Subtract(y GasAmount) GasAmount {
+	IMPL_FINISH()
+	panic("")
+}
+
+func (x *GasAmount_I) SubtractIfNonnegative(y GasAmount) (ret GasAmount, ok bool) {
+	ret = x.Subtract(y)
+	ok = true
+	if ret.LessThan(GasAmount_Zero()) {
+		ret = x
+		ok = false
+	}
+	return
+}
+
+func (x *GasAmount_I) LessThan(y GasAmount) bool {
+	IMPL_FINISH()
+	panic("")
+}
+
+func (x *GasAmount_I) Equals(y GasAmount) bool {
+	IMPL_FINISH()
+	panic("")
+}
+
+func (x *GasAmount_I) Scale(count int) GasAmount {
+	IMPL_FINISH()
+	panic("")
+}
+
+func GasAmount_Affine(b GasAmount, x int, m GasAmount) GasAmount {
+	return b.Add(m.Scale(x))
+}
+
+func GasAmount_Zero() GasAmount {
+	return GasAmount_FromInt(0)
+}
+
+func GasAmount_FromInt(x int) GasAmount {
+	IMPL_FINISH()
+	panic("")
+}
+
+func GasAmount_SentinelUnlimited() GasAmount {
+	// Amount of gas larger than any feasible execution; meant to indicated unlimited gas
+	// (e.g., for builtin system method invocations).
+	return GasAmount_FromInt(1).Scale(1e9).Scale(1e9) // 10^18
+}
+```
+### VM运行时环境（在VM内部）
+#### 收据
+`MessageReceipt`包含一个顶层消息执行的结果。
+
+语法有效的收据具有：  
+一个非负`ExitCode`,  
+`ReturnValue`仅当退出代码为零时为非空，  
+非负数`GasUsed`。
+#### vm/runtime接口
+```
+import actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+import abi "github.com/filecoin-project/specs/actors/abi"
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+import exitcode "github.com/filecoin-project/specs/systems/filecoin_vm/runtime/exitcode"
+import filcrypto "github.com/filecoin-project/specs/algorithms/crypto"
+import indices "github.com/filecoin-project/specs/systems/filecoin_vm/indices"
+import ipld "github.com/filecoin-project/specs/libraries/ipld"
+import msg "github.com/filecoin-project/specs/systems/filecoin_vm/message"
+
+// Runtime is the VM's internal runtime object.
+// this is everything that is accessible to actors, beyond parameters.
+type Runtime interface {
+    CurrEpoch() abi.ChainEpoch
+
+    // Randomness returns a (pseudo)random string for the given epoch and tag.
+    Randomness(tag filcrypto.DomainSeparationTag, epoch abi.ChainEpoch) abi.Randomness
+    RandomnessWithAuxSeed(
+        tag      filcrypto.DomainSeparationTag
+        epoch    abi.ChainEpoch
+        auxSeed  util.Serialization
+    ) abi.Randomness
+
+    // The address of the immediate calling actor.
+    // Not necessarily the actor in the From field of the initial on-chain Message.
+    // Always an ID-address.
+    ImmediateCaller() addr.Address
+    ValidateImmediateCallerIs(caller addr.Address)
+    ValidateImmediateCallerInSet(callers [addr.Address])
+    ValidateImmediateCallerAcceptAnyOfType(type_ abi.ActorCodeID)
+    ValidateImmediateCallerAcceptAnyOfTypes(types [abi.ActorCodeID])
+    ValidateImmediateCallerAcceptAny()
+    ValidateImmediateCallerMatches(CallerPattern)
+
+    // The address of the actor receiving the message. Always an ID-address.
+    CurrReceiver()         addr.Address
+
+    // The actor who mined the block in which the initial on-chain message appears.
+    // Always an ID-address.
+    ToplevelBlockWinner()  addr.Address
+
+    AcquireState()         ActorStateHandle
+
+    SuccessReturn()        InvocOutput
+    ValueReturn(Bytes)     InvocOutput
+
+    // Throw an error indicating a failure condition has occurred, from which the given actor
+    // code is unable to recover.
+    Abort(errExitCode exitcode.ExitCode, msg string)
+
+    // Calls Abort with InvalidArguments_User.
+    AbortArgMsg(msg string)
+    AbortArg()
+
+    // Calls Abort with InconsistentState_User.
+    AbortStateMsg(msg string)
+    AbortState()
+
+    // Calls Abort with InsufficientFunds_User.
+    AbortFundsMsg(msg string)
+    AbortFunds()
+
+    // Calls Abort with RuntimeAPIError.
+    // For internal use only (not in actor code).
+    AbortAPI(msg string)
+
+    // Check that the given condition is true (and call Abort if not).
+    Assert(bool)
+
+    CurrentBalance()  abi.TokenAmount
+    ValueReceived()   abi.TokenAmount
+
+    // Look up the current values of several system-wide economic indices.
+    CurrIndices()     indices.Indices
+
+    // Look up the code ID of a given actor address.
+    GetActorCodeID(addr addr.Address) (ret abi.ActorCodeID, ok bool)
+
+    // Run a (pure function) computation, consuming the gas cost associated with that function.
+    // This mechanism is intended to capture the notion of an ABI between the VM and native
+    // functions, and should be used for any function whose computation is expensive.
+    Compute(ComputeFunctionID, args [util.Any]) util.Any
+
+    // Sends a message to another actor.
+    // If the invoked method does not return successfully, this caller will be aborted too.
+    SendPropagatingErrors(input InvocInput) InvocOutput
+    Send(
+        toAddr     addr.Address
+        methodNum  abi.MethodNum
+        params     abi.MethodParams
+        value      abi.TokenAmount
+    ) InvocOutput
+    SendQuery(
+        toAddr     addr.Address
+        methodNum  abi.MethodNum
+        params     abi.MethodParams
+    ) util.Serialization
+    SendFunds(toAddr addr.Address, value abi.TokenAmount)
+
+    // Sends a message to another actor, trapping an unsuccessful execution.
+    // This may only be invoked by the singleton Cron actor.
+    SendCatchingErrors(input InvocInput) (output InvocOutput, exitCode exitcode.ExitCode)
+
+    // Computes an address for a new actor. The returned address is intended to uniquely refer to
+    // the actor even in the event of a chain re-org (whereas an ID-address might refer to a
+    // different actor after messages are re-ordered).
+    // Always an ActorExec address.
+    NewActorAddress() addr.Address
+
+    // Creates an actor in the state tree, with empty state. May only be called by InitActor.
+    CreateActor(
+        // The new actor's code identifier.
+        codeId   abi.ActorCodeID
+        // Address under which the new actor's state will be stored. Must be an ID-address.
+        address  addr.Address
+    )
+
+    // Deletes an actor in the state tree. May only be called by the actor itself,
+    // or by StoragePowerActor in the case of StorageMinerActors.
+    DeleteActor(address addr.Address)
+
+    // Retrieves and deserializes an object from the store into o. Returns whether successful.
+    IpldGet(c ipld.CID, o ipld.Object) bool
+    // Serializes and stores an object, returning its CID.
+    IpldPut(x ipld.Object) ipld.CID
+}
+
+type InvocInput struct {
+    To      addr.Address
+    Method  abi.MethodNum
+    Params  abi.MethodParams
+    Value   abi.TokenAmount
+}
+
+type InvocOutput struct {
+    ReturnValue Bytes
+}
+
+type MessageReceipt struct {
+    ExitCode     exitcode.ExitCode
+    ReturnValue  Bytes
+    GasUsed      msg.GasAmount
+}  // representation tuple
+
+type ActorStateHandle interface {
+    UpdateRelease(newStateCID actor.ActorSubstateCID)
+    Release(checkStateCID actor.ActorSubstateCID)
+    Take() actor.ActorSubstateCID
+}
+
+type ComputeFunctionID enum {
+    VerifySignature
+}
+```
+#### vm/runtime实作
+...
+#### 代码加载
+...
+#### VM退出代码常量
+```
+type ExitCode union {
+    IsSuccess()          bool
+    IsError()            bool
+    AllowsStateUpdate()  bool
+    Equals(ExitCode)     bool
+
+    Success              struct {}
+    SystemError          SystemErrorCode
+    UserDefinedError     UVarint
+}
+```
+```
+package exitcode
+
+import (
+	"fmt"
+
+	util "github.com/filecoin-project/specs/util"
+)
+
+type SystemErrorCode int
+type UserDefinedErrorCode int
+
+const (
+	// TODO: remove once canonical error codes are finalized
+	SystemErrorCode_Placeholder      = SystemErrorCode(-(1 << 30))
+	UserDefinedErrorCode_Placeholder = UserDefinedErrorCode(-(1 << 30))
+)
+
+var IMPL_FINISH = util.IMPL_FINISH
+var TODO = util.TODO
+
+// TODO: assign all of these.
+const (
+	// ActorNotFound represents a failure to find an actor.
+	ActorNotFound = SystemErrorCode_Placeholder + iota
+
+	// ActorCodeNotFound represents a failure to find the code for a
+	// particular actor in the VM registry.
+	ActorCodeNotFound
+
+	// InvalidMethod represents a failure to find a method in
+	// an actor
+	InvalidMethod
+
+	// InvalidArgumentsSystem indicates that a method was called with the incorrect
+	// number of arguments, or that its arguments did not satisfy its
+	// preconditions
+	InvalidArguments_System
+
+	// InsufficientFunds represents a failure to apply a message, as
+	// it did not carry sufficient funds for its application.
+	InsufficientFunds_System
+
+	// InvalidCallSeqNum represents a message invocation out of sequence.
+	// This happens when message.CallSeqNum is not exactly actor.CallSeqNum + 1
+	InvalidCallSeqNum
+
+	// OutOfGas is returned when the execution of an actor method
+	// (including its subcalls) uses more gas than initially allocated.
+	OutOfGas
+
+	// RuntimeAPIError is returned when an actor method invocation makes a call
+	// to the runtime that does not satisfy its preconditions.
+	RuntimeAPIError
+
+	// RuntimeAssertFailure is returned when an actor method invocation calls
+	// rt.Assert with a false condition.
+	RuntimeAssertFailure
+
+	// MethodSubcallError is returned when an actor method's Send call has
+	// returned with a failure error code (and the Send call did not specify
+	// to ignore errors).
+	MethodSubcallError
+)
+
+const (
+	InsufficientFunds_User = UserDefinedErrorCode_Placeholder + iota
+	InvalidArguments_User
+	InconsistentState_User
+
+	InvalidSectorPacking
+	SealVerificationFailed
+	PoStVerificationFailed
+	DeadlineExceeded
+	InsufficientPledgeCollateral
+)
+
+func OK() ExitCode {
+	return ExitCode_Make_Success(&ExitCode_Success_I{})
+}
+
+func SystemError(x SystemErrorCode) ExitCode {
+	return ExitCode_Make_SystemError(ExitCode_SystemError(x))
+}
+
+func (x *ExitCode_I) IsSuccess() bool {
+	return x.Which() == ExitCode_Case_Success
+}
+
+func (x *ExitCode_I) IsError() bool {
+	return !x.IsSuccess()
+}
+
+func (x *ExitCode_I) AllowsStateUpdate() bool {
+	return x.IsSuccess()
+}
+
+func (x *ExitCode_I) Equals(ExitCode) bool {
+	IMPL_FINISH()
+	panic("")
+}
+
+func EnsureErrorCode(x ExitCode) ExitCode {
+	if !x.IsError() {
+		// Throwing an error with a non-error exit code is itself an error
+		x = SystemError(RuntimeAPIError)
+	}
+	return x
+}
+
+type RuntimeError struct {
+	ExitCode ExitCode
+	ErrMsg   string
+}
+
+func (x *RuntimeError) String() string {
+	ret := fmt.Sprintf("Runtime error: %v", x.ExitCode)
+	if x.ErrMsg != "" {
+		ret += fmt.Sprintf(" (\"%v\")", x.ErrMsg)
+	}
+	return ret
+}
+
+func RuntimeError_Make(exitCode ExitCode, errMsg string) *RuntimeError {
+	exitCode = EnsureErrorCode(exitCode)
+	return &RuntimeError{
+		ExitCode: exitCode,
+		ErrMsg:   errMsg,
+	}
+}
+
+func UserDefinedError(e UserDefinedErrorCode) ExitCode {
+	return ExitCode_Make_UserDefinedError(ExitCode_UserDefinedError(e))
+}
+```
+#### VM气体成本常数
+```
+package runtime
+
+import (
+	abi "github.com/filecoin-project/specs/actors/abi"
+	actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+	msg "github.com/filecoin-project/specs/systems/filecoin_vm/message"
+	util "github.com/filecoin-project/specs/util"
+)
+
+type Bytes = util.Bytes
+
+var TODO = util.TODO
+
+var (
+	// TODO: assign all of these.
+	GasAmountPlaceholder                 = msg.GasAmount_FromInt(1)
+	GasAmountPlaceholder_UpdateStateTree = GasAmountPlaceholder
+)
+
+var (
+	///////////////////////////////////////////////////////////////////////////
+	// System operations
+	///////////////////////////////////////////////////////////////////////////
+
+	// Gas cost charged to the originator of an on-chain message (regardless of
+	// whether it succeeds or fails in application) is given by:
+	//   OnChainMessageBase + len(serialized message)*OnChainMessagePerByte
+	// Together, these account for the cost of message propagation and validation,
+	// up to but excluding any actual processing by the VM.
+	// This is the cost a block producer burns when including an invalid message.
+	OnChainMessageBase    = GasAmountPlaceholder
+	OnChainMessagePerByte = GasAmountPlaceholder
+
+	// Gas cost charged to the originator of a non-nil return value produced
+	// by an on-chain message is given by:
+	//   len(return value)*OnChainReturnValuePerByte
+	OnChainReturnValuePerByte = GasAmountPlaceholder
+
+	// Gas cost for any message send execution(including the top-level one
+	// initiated by an on-chain message).
+	// This accounts for the cost of loading sender and receiver actors and
+	// (for top-level messages) incrementing the sender's sequence number.
+	// Load and store of actor sub-state is charged separately.
+	SendBase = GasAmountPlaceholder
+
+	// Gas cost charged, in addition to SendBase, if a message send
+	// is accompanied by any nonzero currency amount.
+	// Accounts for writing receiver's new balance (the sender's state is
+	// already accounted for).
+	SendTransferFunds = GasAmountPlaceholder
+
+	// Gas cost charged, in addition to SendBase, if a message invokes
+	// a method on the receiver.
+	// Accounts for the cost of loading receiver code and method dispatch.
+	SendInvokeMethod = GasAmountPlaceholder
+
+	// Gas cost (Base + len*PerByte) for any Get operation to the IPLD store
+	// in the runtime VM context.
+	IpldGetBase    = GasAmountPlaceholder
+	IpldGetPerByte = GasAmountPlaceholder
+
+	// Gas cost (Base + len*PerByte) for any Put operation to the IPLD store
+	// in the runtime VM context.
+	//
+	// Note: these costs should be significantly higher than the costs for Get
+	// operations, since they reflect not only serialization/deserialization
+	// but also persistent storage of chain data.
+	IpldPutBase    = GasAmountPlaceholder
+	IpldPutPerByte = GasAmountPlaceholder
+
+	// Gas cost for updating an actor's substate (i.e., UpdateRelease).
+	// This is in addition to a per-byte fee for the state as for IPLD Get/Put.
+	UpdateActorSubstate = GasAmountPlaceholder_UpdateStateTree
+
+	// Gas cost for creating a new actor (via InitActor's Exec method).
+	// Actor sub-state is charged separately.
+	ExecNewActor = GasAmountPlaceholder
+
+	// Gas cost for deleting an actor.
+	DeleteActor = GasAmountPlaceholder
+
+	///////////////////////////////////////////////////////////////////////////
+	// Pure functions (VM ABI)
+	///////////////////////////////////////////////////////////////////////////
+
+	// Gas cost charged per public-key cryptography operation (e.g., signature
+	// verification).
+	PublicKeyCryptoOp = GasAmountPlaceholder
+)
+
+func OnChainMessage(onChainMessageLen int) msg.GasAmount {
+	return msg.GasAmount_Affine(OnChainMessageBase, onChainMessageLen, OnChainMessagePerByte)
+}
+
+func OnChainReturnValue(returnValue Bytes) msg.GasAmount {
+	retLen := 0
+	if returnValue != nil {
+		retLen = len(returnValue)
+	}
+
+	return msg.GasAmount_Affine(msg.GasAmount_Zero(), retLen, OnChainReturnValuePerByte)
+}
+
+func IpldGet(dataSize int) msg.GasAmount {
+	return msg.GasAmount_Affine(IpldGetBase, dataSize, IpldGetPerByte)
+}
+
+func IpldPut(dataSize int) msg.GasAmount {
+	return msg.GasAmount_Affine(IpldPutBase, dataSize, IpldPutPerByte)
+}
+
+func InvokeMethod(value abi.TokenAmount, method abi.MethodNum) msg.GasAmount {
+	ret := SendBase
+	if value != abi.TokenAmount(0) {
+		ret = ret.Add(SendTransferFunds)
+	}
+	if method != actor.MethodSend {
+		ret = ret.Add(SendInvokeMethod)
+	}
+	return ret
+}
+```
+### 系统角色
+VM处理需要两个系统参与者：  
+CronActor-在每个时期运行关键功能  
+InitActor-初始化新角色，记录网络名称  
+还有另外两个VM级别参与者：  
+AccounterActor-用于用户账户（非单个）  
+RewardActor-用于块奖励和令牌归属（单个）。
+#### 初始化演员
+```
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+import abi "github.com/filecoin-project/specs/actors/abi"
+import vmr "github.com/filecoin-project/specs/systems/filecoin_vm/runtime"
+
+type InitActorState struct {
+    // responsible for create new actors
+    AddressMap   {addr.Address: addr.ActorID}
+    NextID       addr.ActorID
+    NetworkName  string
+
+    // Allocates a new ID and maps another address to it. Returns the ID-address.
+    MapAddressToNewID(address addr.Address) addr.Address
+    // Resolves an address to an ID-address, if possible. Returns the argument if un-mapped.
+    ResolveAddress(address addr.Address) addr.Address
+}
+
+type InitActorCode struct {
+    Constructor(r vmr.Runtime, networkName string)
+    Exec(r vmr.Runtime, code abi.ActorCodeID, params abi.MethodParams) addr.Address
+
+    // This method is disabled until proven necessary.
+    //GetActorIDForAddress(r vmr.Runtime, address addr.Address) addr.ActorID
+}
+```
+```
+package init
+
+import (
+	abi "github.com/filecoin-project/specs/actors/abi"
+	builtin "github.com/filecoin-project/specs/actors/builtin"
+	vmr "github.com/filecoin-project/specs/actors/runtime"
+	autil "github.com/filecoin-project/specs/actors/util"
+	ipld "github.com/filecoin-project/specs/libraries/ipld"
+	actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+	addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+)
+
+type InvocOutput = vmr.InvocOutput
+type Runtime = vmr.Runtime
+type Bytes = abi.Bytes
+
+var AssertMsg = autil.AssertMsg
+
+func (a *InitActorCode_I) Constructor(rt Runtime) InvocOutput {
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+	h := rt.AcquireState()
+	st := &InitActorState_I{
+		AddressMap_:  map[addr.Address]addr.ActorID{}, // TODO: HAMT
+		NextID_:      addr.ActorID(addr.FirstNonSingletonActorId),
+		NetworkName_: vmr.NetworkName(),
+	}
+	UpdateRelease(rt, h, st)
+	return rt.ValueReturn(nil)
+}
+
+func (a *InitActorCode_I) Exec(rt Runtime, execCodeID abi.ActorCodeID, constructorParams abi.MethodParams) InvocOutput {
+	rt.ValidateImmediateCallerAcceptAny()
+	callerCodeID, ok := rt.GetActorCodeID(rt.ImmediateCaller())
+	AssertMsg(ok, "no code for actor at %s", rt.ImmediateCaller())
+	if !_codeIDSupportsExec(callerCodeID, execCodeID) {
+		rt.AbortArgMsg("Caller type cannot create an actor of requested type")
+	}
+
+	// Compute a re-org-stable address.
+	// This address exists for use by messages coming from outside the system, in order to
+	// stably address the newly created actor even if a chain re-org causes it to end up with
+	// a different ID.
+	newAddr := rt.NewActorAddress()
+
+	// Allocate an ID for this actor.
+	// Store mapping of pubkey or actor address to actor ID
+	h, st := _loadState(rt)
+	idAddr := st.MapAddressToNewID(newAddr)
+	UpdateRelease(rt, h, st)
+
+	// Create an empty actor.
+	rt.CreateActor(execCodeID, idAddr)
+
+	// Invoke constructor. If construction fails, the error should propagate and cause
+	// Exec to fail too.
+	rt.SendPropagatingErrors(&vmr.InvocInput_I{
+		To_:     idAddr,
+		Method_: actor.MethodConstructor,
+		Params_: constructorParams,
+		Value_:  rt.ValueReceived(),
+	})
+
+	return rt.ValueReturn(
+		Bytes(addr.Serialize_Address_Compact(idAddr)))
+}
+
+// This method is disabled until proven necessary.
+//func (a *InitActorCode_I) GetActorIDForAddress(rt Runtime, address addr.Address) InvocOutput {
+//	h, st := _loadState(rt)
+//	actorID := st.AddressMap()[address]
+//	Release(rt, h, st)
+//	return rt.ValueReturn(Bytes(addr.Serialize_ActorID(actorID)))
+//}
+
+func (s *InitActorState_I) ResolveAddress(address addr.Address) addr.Address {
+	actorID, ok := s.AddressMap()[address]
+	if ok {
+		return addr.Address_Make_ID(addr.Address_NetworkID_Testnet, actorID)
+	}
+	return address
+}
+
+func (s *InitActorState_I) MapAddressToNewID(address addr.Address) addr.Address {
+	actorID := s.NextID_
+	s.NextID_++
+	s.AddressMap()[address] = actorID
+	return addr.Address_Make_ID(addr.Address_NetworkID_Testnet, actorID)
+}
+
+func _codeIDSupportsExec(callerCodeID abi.ActorCodeID, execCodeID abi.ActorCodeID) bool {
+	if execCodeID == builtin.AccountActorCodeID {
+		// Special case: account actors must be created implicitly by sending value;
+		// cannot be created via exec.
+		return false
+	}
+
+	if execCodeID == builtin.PaymentChannelActorCodeID {
+		return true
+	}
+
+	if execCodeID == builtin.StorageMinerActorCodeID {
+		if callerCodeID == builtin.StoragePowerActorCodeID {
+			return true
+		}
+	}
+
+	return false
+}
+
+///// Boilerplate /////
+
+func _loadState(rt Runtime) (vmr.ActorStateHandle, InitActorState) {
+	h := rt.AcquireState()
+	stateCID := ipld.CID(h.Take())
+	var state InitActorState_I
+	if !rt.IpldGet(stateCID, &state) {
+		rt.AbortAPI("state not found")
+	}
+	return h, &state
+}
+
+func Release(rt Runtime, h vmr.ActorStateHandle, st InitActorState) {
+	checkCID := actor.ActorSubstateCID(rt.IpldPut(st.Impl()))
+	h.Release(checkCID)
+}
+
+func UpdateRelease(rt Runtime, h vmr.ActorStateHandle, st InitActorState) {
+	newCID := actor.ActorSubstateCID(rt.IpldPut(st.Impl()))
+	h.UpdateRelease(newCID)
+}
+
+func (st *InitActorState_I) CID() ipld.CID {
+	panic("TODO")
+}
+```
+#### CronActor
+```
+import abi "github.com/filecoin-project/specs/actors/abi"
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+import vmr "github.com/filecoin-project/specs/actors/runtime"
+
+type CronActorState struct {
+    // Cron has no internal state
+}
+
+type CronTableEntry struct {
+    ToAddr     addr.Address
+    MethodNum  abi.MethodNum
+}
+
+type CronActorCode struct {
+    // Entries is a set of actors (and corresponding methods) to call during EpochTick.
+    // This can be done a bunch of ways. We do it this way here to make it easy to add
+    // a handler to Cron elsewhere in the spec code. How to do this is implementation
+    // specific.
+    Entries [CronTableEntry]
+
+    // EpochTick executes built-in periodic actions, run at every Epoch.
+    // EpochTick(r) is called after all other messages in the epoch have been applied.
+    // This can be seen as an implicit last message.
+    EpochTick(r vmr.Runtime)
+}
+```
+```
+package cron
+
+import actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+import abi "github.com/filecoin-project/specs/actors/abi"
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+import vmr "github.com/filecoin-project/specs/actors/runtime"
+
+const (
+	Method_CronActor_EpochTick = actor.MethodPlaceholder + iota
+)
+
+type InvocOutput = vmr.InvocOutput
+type Runtime = vmr.Runtime
+
+func (a *CronActorCode_I) Constructor(rt vmr.Runtime) InvocOutput {
+	// Nothing. intentionally left blank.
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+	return rt.SuccessReturn()
+}
+
+func (a *CronActorCode_I) EpochTick(rt vmr.Runtime) InvocOutput {
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+
+	// a.Entries is basically a static registry for now, loaded
+	// in the interpreter static registry.
+	for _, entry := range a.Entries() {
+		rt.SendCatchingErrors(&vmr.InvocInput_I{
+			To_:     entry.ToAddr(),
+			Method_: entry.MethodNum(),
+			Params_: nil,
+			Value_:  abi.TokenAmount(0),
+		})
+	}
+
+	return rt.SuccessReturn()
+}
+```
+#### AccounActor
+```
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+
+type AccountActorCode struct {}
+
+type AccountActorState struct {
+    Address addr.Address
+}
+```
+```
+package account
+
+import (
+	vmr "github.com/filecoin-project/specs/actors/runtime"
+	ipld "github.com/filecoin-project/specs/libraries/ipld"
+	addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+)
+
+type InvocOutput = vmr.InvocOutput
+
+func (a *AccountActorCode_I) Constructor(rt vmr.Runtime) InvocOutput {
+	// Nothing. intentionally left blank.
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+	return rt.SuccessReturn()
+}
+
+func (st *AccountActorState_I) CID() ipld.CID {
+	panic("TODO")
+}
+```
+#### 奖励演员
+RewardActor是保存未使用和未使用的Filecoin令牌的位置。在创世之初，RewardActor会使用投资者账户，代币和归属时间表进行初始化，该流程是`RewardMap`从所有者地址到`Reward`结构的映射。一个`Reward`结构包含一个`StartEpoch`跟踪`Reward`创建时间的结构，`Value`该结构表示奖励令牌的总数，并且`ReleaseRate`是每个纪元以FIL为单位的线性释放速率。`WithdrawAmount`记录到目前为止已从`Reward`结构中提取了多少令牌。 所有者地址可以调用`WithdrawReward`，它将从到目前为止的`RewardMap`撤回投资者地址拥有的所有既有代币。 当`WithdrawAmount`等于Reward结构中的Value时，即为`RewardRewardMap`。
+
+`RewardMap`也可用于区块奖励铸造中，以保留向协议引入区块奖励归属的灵活性。`MinReward`创建一个新`Reward`结构并将其添加到`RewardMap`中。
+
+```
+import vmr "github.com/filecoin-project/specs/actors/runtime"
+import abi "github.com/filecoin-project/specs/actors/abi"
+import addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+
+type VestingFunction enum {
+    None
+    Linear
+    // TODO: potential options
+    // PieceWise
+    // Quadratic
+    // Exponential
+}
+
+type Reward struct {
+    VestingFunction
+    StartEpoch       abi.ChainEpoch
+    EndEpoch         abi.ChainEpoch
+    Value            abi.TokenAmount
+    AmountWithdrawn  abi.TokenAmount
+
+    AmountVested(elapsedEpoch abi.ChainEpoch) abi.TokenAmount
+}
+
+// ownerAddr to a collection of Reward
+type RewardBalanceAMT {addr.Address: [Reward]}
+
+type RewardActorState struct {
+    RewardMap RewardBalanceAMT
+
+    _withdrawReward(rt vmr.Runtime, ownerAddr addr.Address) abi.TokenAmount
+}
+
+type RewardActorCode struct {
+    Constructor(rt vmr.Runtime)
+
+    // Allocates a block reward to the owner of a miner, less
+    // - penalty, which is burnt
+    // - any amount of pledge collateral shortfall, which is transferred to storage power actor
+    AwardBlockReward(rt vmr.Runtime, miner addr.Address, penalty abi.TokenAmount)
+
+    // withdraw available funds from RewardMap
+    WithdrawReward(rt vmr.Runtime)
+}
+```
+```
+package reward
+
+import (
+	"math"
+
+	abi "github.com/filecoin-project/specs/actors/abi"
+	vmr "github.com/filecoin-project/specs/actors/runtime"
+	serde "github.com/filecoin-project/specs/actors/serde"
+	autil "github.com/filecoin-project/specs/actors/util"
+	ipld "github.com/filecoin-project/specs/libraries/ipld"
+	actor "github.com/filecoin-project/specs/systems/filecoin_vm/actor"
+	addr "github.com/filecoin-project/specs/systems/filecoin_vm/actor/address"
+	ai "github.com/filecoin-project/specs/systems/filecoin_vm/actor_interfaces"
+)
+
+type InvocOutput = vmr.InvocOutput
+type Runtime = vmr.Runtime
+
+var IMPL_FINISH = autil.IMPL_FINISH
+var IMPL_TODO = autil.IMPL_TODO
+var TODO = autil.TODO
+
+////////////////////////////////////////////////////////////////////////////////
+// Boilerplate
+////////////////////////////////////////////////////////////////////////////////
+
+func (a *RewardActorCode_I) State(rt Runtime) (vmr.ActorStateHandle, RewardActorState) {
+	h := rt.AcquireState()
+	stateCID := ipld.CID(h.Take())
+	var state RewardActorState_I
+	if !rt.IpldGet(stateCID, &state) {
+		rt.AbortAPI("state not found")
+	}
+	return h, &state
+}
+func UpdateReleaseRewardActorState(rt Runtime, h vmr.ActorStateHandle, st RewardActorState) {
+	newCID := actor.ActorSubstateCID(rt.IpldPut(st.Impl()))
+	h.UpdateRelease(newCID)
+}
+func (st *RewardActorState_I) CID() ipld.CID {
+	panic("TODO")
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+func (r *Reward_I) AmountVested(elapsedEpoch abi.ChainEpoch) abi.TokenAmount {
+	switch r.VestingFunction() {
+	case VestingFunction_None:
+		return r.Value()
+	case VestingFunction_Linear:
+		TODO() // BigInt
+		vestedProportion := math.Max(1.0, float64(elapsedEpoch)/float64(r.StartEpoch()-r.EndEpoch()))
+		return abi.TokenAmount(uint64(r.Value()) * uint64(vestedProportion))
+	default:
+		return abi.TokenAmount(0)
+	}
+}
+
+func (st *RewardActorState_I) _withdrawReward(rt vmr.Runtime, ownerAddr addr.Address) abi.TokenAmount {
+
+	rewards, found := st.RewardMap()[ownerAddr]
+	if !found {
+		rt.AbortStateMsg("ra._withdrawReward: ownerAddr not found in RewardMap.")
+	}
+
+	rewardToWithdrawTotal := abi.TokenAmount(0)
+	indicesToRemove := make([]int, len(rewards))
+
+	for i, r := range rewards {
+		elapsedEpoch := rt.CurrEpoch() - r.StartEpoch()
+		unlockedReward := r.AmountVested(elapsedEpoch)
+		withdrawableReward := unlockedReward - r.AmountWithdrawn()
+
+		if withdrawableReward < 0 {
+			rt.AbortStateMsg("ra._withdrawReward: negative withdrawableReward.")
+		}
+
+		r.Impl().AmountWithdrawn_ = unlockedReward // modify rewards in place
+		rewardToWithdrawTotal += withdrawableReward
+
+		if r.AmountWithdrawn() == r.Value() {
+			indicesToRemove = append(indicesToRemove, i)
+		}
+	}
+
+	updatedRewards := removeIndices(rewards, indicesToRemove)
+	st.RewardMap()[ownerAddr] = updatedRewards
+
+	return rewardToWithdrawTotal
+}
+
+func (a *RewardActorCode_I) Constructor(rt vmr.Runtime) InvocOutput {
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+
+	// initialize Reward Map with investor accounts
+	panic("TODO")
+}
+
+func (a *RewardActorCode_I) AwardBlockReward(
+	rt vmr.Runtime,
+	miner addr.Address,
+	penalty abi.TokenAmount,
+	minerNominalPower abi.StoragePower,
+	currPledge abi.TokenAmount,
+) {
+	rt.ValidateImmediateCallerIs(addr.SystemActorAddr)
+
+	inds := rt.CurrIndices()
+	pledgeReq := inds.PledgeCollateralReq(minerNominalPower)
+	currReward := inds.GetCurrBlockRewardForMiner(minerNominalPower, currPledge)
+	TODO()                                                                              // BigInt
+	underPledge := math.Max(float64(abi.TokenAmount(0)), float64(pledgeReq-currPledge)) // 0 if over collateralized
+	rewardToGarnish := math.Min(float64(currReward), float64(underPledge))
+
+	TODO()
+	// handle penalty here
+	// also handle penalty greater than reward
+	actualReward := currReward - abi.TokenAmount(rewardToGarnish)
+	if rewardToGarnish > 0 {
+		// Send fund to SPA for collateral
+		rt.Send(
+			addr.StoragePowerActorAddr,
+			ai.Method_StoragePowerActor_AddBalance,
+			serde.MustSerializeParams(miner),
+			abi.TokenAmount(rewardToGarnish),
+		)
+	}
+
+	h, st := a.State(rt)
+	if actualReward > 0 {
+		// put Reward into RewardMap
+		newReward := &Reward_I{
+			StartEpoch_:      rt.CurrEpoch(),
+			EndEpoch_:        rt.CurrEpoch(),
+			Value_:           actualReward,
+			AmountWithdrawn_: abi.TokenAmount(0),
+			VestingFunction_: VestingFunction_None,
+		}
+		rewards, found := st.RewardMap()[miner]
+		if !found {
+			rewards = make([]Reward, 0)
+		}
+		rewards = append(rewards, newReward)
+		st.Impl().RewardMap_[miner] = rewards
+	}
+	UpdateReleaseRewardActorState(rt, h, st)
+}
+
+func (a *RewardActorCode_I) WithdrawReward(rt vmr.Runtime) {
+	vmr.RT_ValidateImmediateCallerIsSignable(rt)
+	ownerAddr := rt.ImmediateCaller()
+
+	h, st := a.State(rt)
+
+	// withdraw available funds from RewardMap
+	withdrawableReward := st._withdrawReward(rt, ownerAddr)
+	UpdateReleaseRewardActorState(rt, h, st)
+
+	rt.SendFunds(ownerAddr, withdrawableReward)
+}
+
+func removeIndices(rewards []Reward, indices []int) []Reward {
+	// remove fully paid out Rewards by indices
+	panic("TODO")
+}
+```
+### VM解释器-消息调用（外部VM）
+VM解释器根据提示集在其父状态上的提示集协调消息的执行，从而产生新状态和一系列消息回执。此新状态的CID和收据集合的CID包含在后续纪元的块中，这些纪元必须同意这些CID才能形成新的提示集。
+
+每个状态更改都由消息的执行来驱动。提示集中所有块中的消息都必须执行才能产生下一个状态。来自第一个块闳的所有消息均在技巧集中 的第二个和后续块的消息之前执行。对于每个块，首先执行BLS聚合的消息，然后执行SECP签名名额消息。
+#### 隐式消息
+除了显式包含在每个块中的消息之外，隐含消息还会在每个时期对状态进行一些更改。隐式消息不在节点之间传输，而是有解释器在评估时构造的。
+
+对于提示集中的每个块，隐式消息:
+
+调用区块生产者的旷工Actor来处理（已验证的）选举PoSt提交，作为区块中的第一条消息；  
+调用奖励参与者将区块奖励支付给矿工的所以者账户，作为区块中的最终消息；   
+对于每个提示集，一个隐式消息：
+
+调用cron actor来处理自动支票和付款，作为提示集中的最后一条消息。
+
+所有隐式消息的构造`From`地址都是杰出的系统账户参与者。他们指定的汽油价格为零，但必须包括在计算中。为了计算新状态，他们必须成功（退出代码为零）。隐式邮件的收据不包括在收据列表中；只有明确的消息才有明确的回执。
